@@ -65,6 +65,7 @@ def run_turn(
     messages: list[dict[str, Any]],
     tools: list[Tool],
     provider: Provider,
+    run_id: str | None = None,
 ) -> Iterator[AgentEvent]:
     """Run one user turn, yielding AgentEvents as things happen.
 
@@ -84,7 +85,14 @@ def run_turn(
             return
 
         try:
-            stream = provider.stream(messages=messages, tools=tool_schemas)
+            # session_id/run_id let the instrumented wrapper
+            # attribute llm.request/llm.response events.
+            stream = provider.stream(
+                messages=messages,
+                tools=tool_schemas,
+                session_id=session_id,
+                run_id=run_id,
+            )
         except Exception as exc:  # surface auth/config errors to the UI
             yield AgentEvent("error", {"message": f"LLM call failed: {exc}"})
             return

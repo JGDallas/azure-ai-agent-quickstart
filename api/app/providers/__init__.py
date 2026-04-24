@@ -9,6 +9,7 @@ complete credentials so the UI can show a picker later on.
 from __future__ import annotations
 
 from ..config import settings
+from ._instrumented import InstrumentedProvider
 from .base import Provider, ProviderEvent, TextDelta, ToolArgsDelta, ToolCallStart, Usage
 
 __all__ = [
@@ -51,7 +52,7 @@ def get_provider(name: str | None = None) -> Provider:
             f"Set its env vars in .env or change LLM_PROVIDER."
         )
     if active not in _cache:
-        _cache[active] = _build(active)
+        _cache[active] = InstrumentedProvider(_build(active))
     return _cache[active]
 
 

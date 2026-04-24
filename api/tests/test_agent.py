@@ -25,14 +25,14 @@ class FakeProvider:
         self.json_calls: list[list[dict[str, Any]]] = []
         self.json_response = "{}"
 
-    def stream(self, messages, tools, temperature=0.2) -> Iterator[ProviderEvent]:
+    def stream(self, messages, tools, temperature=0.2, *, session_id=None, run_id=None) -> Iterator[ProviderEvent]:
         idx = self.call_count
         self.call_count += 1
         if idx >= len(self._rounds):
             raise AssertionError(f"FakeProvider called {self.call_count} times; only {len(self._rounds)} rounds scripted")
         yield from self._rounds[idx]
 
-    def complete_json(self, messages, schema=None, temperature=0.0) -> str:
+    def complete_json(self, messages, schema=None, temperature=0.0, *, session_id=None, run_id=None) -> str:
         self.json_calls.append(list(messages))
         return self.json_response
 

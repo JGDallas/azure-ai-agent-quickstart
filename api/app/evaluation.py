@@ -63,6 +63,8 @@ def evaluate(
     user_message: str,
     assistant_message: str,
     retrieved_context: list[str] | None = None,
+    session_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     context_block = ""
     if retrieved_context:
@@ -80,7 +82,13 @@ def evaluate(
     ]
 
     try:
-        raw = provider.complete_json(messages=messages, schema=SCORE_SCHEMA, temperature=0.0)
+        raw = provider.complete_json(
+            messages=messages,
+            schema=SCORE_SCHEMA,
+            temperature=0.0,
+            session_id=session_id,
+            run_id=run_id,
+        )
         parsed = json.loads(raw)
     except Exception as exc:
         return {"error": f"Evaluation failed: {exc}"}

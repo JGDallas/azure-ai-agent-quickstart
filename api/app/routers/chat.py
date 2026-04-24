@@ -76,7 +76,13 @@ def chat(req: ChatRequest) -> EventSourceResponse:
         cost_usd = 0.0
 
         try:
-            for evt in run_turn(session_id=session_id, messages=messages, tools=spec.tools, provider=provider):
+            for evt in run_turn(
+                session_id=session_id,
+                run_id=run_id,
+                messages=messages,
+                tools=spec.tools,
+                provider=provider,
+            ):
                 payload = evt.data
                 if evt.type == "usage":
                     cumulative = payload.get("cumulative") or {}

@@ -4,15 +4,20 @@
 export type AgentSpec = { id: string; name: string; description: string };
 
 export type Flags = {
-  azure_openai: boolean;
+  provider_azure: boolean;
+  provider_openai: boolean;
+  provider_anthropic: boolean;
   azure_ai_search: boolean;
   app_insights: boolean;
 };
 
 export type Health = {
   status: string;
+  provider: string;
+  model: string;
+  providers_configured: string[];
   features: Flags;
-  deployment: string;
+  deployment?: string;
 };
 
 export type Budget = {
@@ -60,6 +65,24 @@ export async function evaluateLast(sessionId: string): Promise<EvalResult> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId }),
   });
+  return res.json();
+}
+
+export type TraceEvent = {
+  run_id: string | null;
+  session_id: string | null;
+  type: string;
+  payload: any;
+  ts: number;
+};
+
+export type TracesResponse = {
+  memory: Array<{ ts: number; type: string; [k: string]: any }>;
+  persisted: TraceEvent[];
+};
+
+export async function getTraces(sessionId: string, limit: number = 200): Promise<TracesResponse> {
+  const res = await fetch(`${API}/traces?session_id=${encodeURIComponent(sessionId)}&limit=${limit}`);
   return res.json();
 }
 
