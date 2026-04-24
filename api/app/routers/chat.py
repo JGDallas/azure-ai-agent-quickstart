@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import date, datetime, timezone
 from typing import Any, Iterator
 
 from fastapi import APIRouter
@@ -54,7 +55,17 @@ def chat(req: ChatRequest) -> EventSourceResponse:
     # gets an extra web_search tool when the user toggled it ON
     # in the UI and the server is configured (TAVILY_API_KEY set).
     tools = list(spec.tools)
-    system_prompt = spec.system_prompt
+    # LLMs have no clock and fall back to their training-cutoff
+    # date for temporal questions. Inject today's date into the
+    # system prompt so "what is today" / "what tickets opened
+    # today" / etc. are answerable without a tool call.
+    today = date.today().isoformat()
+    now_utc = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    system_prompt = (
+        f"Today is {today} ({now_utc}). Use this for any question "
+        f"that depends on the current date or time.\n\n"
+        f"{spec.system_prompt}"
+    )
     web_search_on = (
         req.enable_web_search
         and settings.flags.get("web_search", False)
@@ -65,9 +76,12 @@ def chat(req: ChatRequest) -> EventSourceResponse:
         tools.append(web_search)
         system_prompt += (
             "\n\nYou also have a web_search tool backed by Tavily. "
-            "Use it for questions about current events, recent "
-            "releases, or topics not in the local corpus. Always "
-            "cite the URLs you used."
+            "Use it aggressively for any question about current "
+            "events, recent releases, people or companies, prices, "
+            "or any topic that is not in the local corpus. If the "
+            "question depends on post-training information, call "
+            "web_search first before answering. Always cite the URLs "
+            "you used."
         )
 
     # Assemble the full message history: system + persisted + new user turn.

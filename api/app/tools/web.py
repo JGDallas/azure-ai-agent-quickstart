@@ -59,11 +59,20 @@ def _run(args: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
+    # Use Bearer header auth (Tavily's current documented auth
+    # method) plus an explicit User-Agent so we don't trip CDN
+    # filters. `api_key` in the body is still accepted as a
+    # fallback by the older endpoint behavior but the header
+    # version is what the docs show now.
     try:
         resp = httpx.post(
             TAVILY_URL,
+            headers={
+                "Authorization": f"Bearer {settings.tavily_api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "azure-ai-agent-quickstart/0.1 (+https://github.com/jgdallas/azure-ai-agent-quickstart)",
+            },
             json={
-                "api_key": settings.tavily_api_key,
                 "query": query,
                 "max_results": top_k,
                 "include_answer": True,
