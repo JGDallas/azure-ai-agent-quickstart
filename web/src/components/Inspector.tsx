@@ -148,7 +148,10 @@ function ToolTimeline({ events }: { events: ToolEvent[] }) {
               </span>
             </div>
             {e.args && (
-              <div className="text-ink-400 truncate" title={JSON.stringify(e.args)}>
+              <div
+                className="text-ink-400 break-all whitespace-pre-wrap font-mono text-[10px] leading-snug mt-0.5"
+                title={JSON.stringify(e.args)}
+              >
                 {JSON.stringify(e.args)}
               </div>
             )}
