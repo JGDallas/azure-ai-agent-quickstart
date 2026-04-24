@@ -85,11 +85,17 @@ export default function App() {
           t.id === data.id ? { ...t, result: data.result, latencyMs: data.latency_ms } : t,
         ),
       );
-    } else if (event === "usage" || event === "final") {
-      refreshBudget();
-      if (event === "final") setServerRefreshToken((n) => n + 1);
+    } else if (event === "usage") {
+      // The server inlines the full cumulative budget in every
+      // usage event — no need to refetch. This also avoids a
+      // stale-closure race where refreshBudget() on the first
+      // turn would see sessionId=null and bail.
+      if (data?.cumulative) setBudget(data.cumulative);
+    } else if (event === "final") {
+      if (data?.budget) setBudget(data.budget);
+      setServerRefreshToken((n) => n + 1);
     }
-  }, [refreshBudget]);
+  }, []);
 
   function startNewSession() {
     setSessionId(null);
