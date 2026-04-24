@@ -9,6 +9,7 @@ export type Flags = {
   provider_anthropic: boolean;
   azure_ai_search: boolean;
   app_insights: boolean;
+  web_search: boolean;
 };
 
 export type Health = {
@@ -92,6 +93,7 @@ export async function* streamChat(body: {
   session_id: string | null;
   agent: string;
   message: string;
+  enable_web_search?: boolean;
 }): AsyncGenerator<SSEEvent> {
   const res = await fetch(`${API}/chat`, {
     method: "POST",

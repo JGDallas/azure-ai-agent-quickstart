@@ -77,6 +77,9 @@ class Settings:
     # Optional App Insights.
     app_insights_conn: str
 
+    # Optional Tavily (web search).
+    tavily_api_key: str
+
     # Local paths.
     db_path: str
     demo_db_path: str
@@ -153,6 +156,8 @@ def load_settings() -> Settings:
 
     ai_conn = _env("APPLICATIONINSIGHTS_CONNECTION_STRING")
 
+    tavily_key = _env("TAVILY_API_KEY")
+
     data_dir = _env("DATA_DIR", "/data")
     os.makedirs(data_dir, exist_ok=True)
 
@@ -166,6 +171,7 @@ def load_settings() -> Settings:
             and not _placeholder(search_index)
         ),
         "app_insights": not _placeholder(ai_conn),
+        "web_search": not _placeholder(tavily_key),
     }
 
     return Settings(
@@ -185,6 +191,7 @@ def load_settings() -> Settings:
         azure_search_key=search_key,
         azure_search_index=search_index,
         app_insights_conn=ai_conn,
+        tavily_api_key=tavily_key,
         db_path=os.path.join(data_dir, "app.db"),
         demo_db_path=os.path.join(data_dir, "demo.db"),
         sample_docs_dir=_env("SAMPLE_DOCS_DIR", "/app/sample_docs"),
