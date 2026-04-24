@@ -9,6 +9,7 @@ import {
 } from "./api";
 import { AgentPicker } from "./components/AgentPicker";
 import { ChatPanel } from "./components/ChatPanel";
+import { ClientEvent, DevDrawer } from "./components/DevDrawer";
 import { Inspector } from "./components/Inspector";
 
 type ToolEvent = {
@@ -30,14 +31,19 @@ export default function App() {
   const [deployment, setDeployment] = useState<string>("");
   const [banner, setBanner] = useState<string | null>(null);
 
+  // Dev drawer state
+  const [devOpen, setDevOpen] = useState(false);
+  const [clientEvents, setClientEvents] = useState<ClientEvent[]>([]);
+  const [serverRefreshToken, setServerRefreshToken] = useState(0);
+
   useEffect(() => {
     (async () => {
       try {
         const h = await getHealth();
         setFlags(h.features);
-        setDeployment(h.deployment);
-        if (!h.features.azure_openai) {
-          setBanner("Azure OpenAI is not configured. Fill in AZURE_OPENAI_* in .env and restart.");
+        setDeployment(`${h.provider}/${h.model}`);
+        if (!h.features.provider_azure && !h.features.provider_openai && !h.features.provider_anthropic) {
+          setBanner("No LLM provider is configured. Fill in the provider block for your LLM_PROVIDER in .env and restart.");
         }
       } catch (e) {
         setBanner("Cannot reach the API. Is the api container running?");
@@ -48,7 +54,6 @@ export default function App() {
         if (a.length && !agentId) setAgentId(a[0].id);
       } catch {}
     })();
-
   }, []);
 
   const refreshBudget = useCallback(async () => {
@@ -66,6 +71,9 @@ export default function App() {
   }, [refreshBudget]);
 
   const onEvent = useCallback((event: string, data: any) => {
+    // Record every SSE event for the dev drawer's Client tab.
+    setClientEvents((evs) => [...evs, { ts: Date.now(), event, data }]);
+
     if (event === "tool_call") {
       setToolEvents((ts) => [
         ...ts,
@@ -78,8 +86,8 @@ export default function App() {
         ),
       );
     } else if (event === "usage" || event === "final") {
-      // Poll the authoritative budget endpoint so UI matches server state.
       refreshBudget();
+      if (event === "final") setServerRefreshToken((n) => n + 1);
     }
   }, [refreshBudget]);
 
@@ -87,6 +95,7 @@ export default function App() {
     setSessionId(null);
     setBudget(null);
     setToolEvents([]);
+    setClientEvents([]);
   }
 
   const integrations = useMemo(() => {
@@ -103,7 +112,14 @@ export default function App() {
       <header className="px-5 py-3 border-b border-ink-200 flex items-center gap-4 bg-white">
         <div className="font-semibold">Azure AI Agent Quickstart</div>
         <div className="text-xs text-ink-400">{integrations}</div>
-        <div className="ml-auto text-xs text-ink-400">
+        <button
+          onClick={() => setDevOpen((v) => !v)}
+          className="ml-auto text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 font-mono"
+          title="Developer drawer: raw SSE events, server-side LLM calls"
+        >
+          {"{ }"} dev
+        </button>
+        <div className="text-xs text-ink-400">
           {sessionId ? `session ${sessionId}` : "no session yet"}
         </div>
       </header>
@@ -142,6 +158,14 @@ export default function App() {
           />
         </aside>
       </div>
+      <DevDrawer
+        open={devOpen}
+        onClose={() => setDevOpen(false)}
+        sessionId={sessionId}
+        clientEvents={clientEvents}
+        onClear={() => setClientEvents([])}
+        refreshToken={serverRefreshToken}
+      />
     </div>
   );
 }

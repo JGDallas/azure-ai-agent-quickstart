@@ -43,4 +43,10 @@ def run_eval(req: EvalRequest) -> dict[str, Any]:
             detail="Need either (user_message + assistant_message) or a session_id with prior turns.",
         )
 
-    return evaluate(get_provider(req.provider), user_msg, assistant_msg, req.retrieved_context)
+    return evaluate(
+        get_provider(req.provider),
+        user_msg,
+        assistant_msg,
+        req.retrieved_context,
+        session_id=req.session_id,
+    )
