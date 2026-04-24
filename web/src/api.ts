@@ -85,9 +85,10 @@ export async function* streamChat(body: {
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    // Normalize CRLF -> LF so our event-boundary scan is trivial;
+    // sse-starlette writes \r\n\r\n between events.
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
-    // SSE events are separated by a blank line.
     let sep = buffer.indexOf("\n\n");
     while (sep !== -1) {
       const raw = buffer.slice(0, sep);
