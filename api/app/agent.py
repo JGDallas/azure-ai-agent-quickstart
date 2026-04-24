@@ -3,19 +3,20 @@
 This is the piece the repo is meant to teach. Read it top to
 bottom. A turn works like this:
 
-    1. Send the conversation + tool schemas to Azure OpenAI with
-       streaming enabled.
-    2. As chunks arrive, stream text deltas straight to the
-       caller AND assemble any tool_calls by index.
-    3. If the round produced tool_calls, execute each tool,
-       append the assistant message (with tool_calls) and one
-       `role: tool` message per result, then loop.
+    1. Ask the active provider to stream a response for the
+       current conversation + tool schemas.
+    2. As events arrive (text deltas, tool-call starts, tool-arg
+       deltas, and a final usage record), pass text straight
+       through to the caller and assemble tool calls by id.
+    3. If the round produced tool_calls, execute each, append
+       the assistant message (with tool_calls) and one `role:
+       tool` message per result, then loop.
     4. Otherwise, the assistant produced plain text — emit a
        `done` event and return.
 
-There's a hard cap on iterations so a buggy tool loop can't burn
-the whole token budget. Budget accounting runs after every round
-and halts the turn if the session cap would be exceeded.
+The provider abstraction in `providers/base.py` means this file
+has zero vendor knowledge. Swap LLM_PROVIDER in .env and the
+same loop runs against Azure, OpenAI, or (Phase 2) Anthropic.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
 from .budget import BudgetExceeded, apply_usage, remaining
-from .llm import chat_stream
+from .providers import Provider, TextDelta, ToolArgsDelta, ToolCallStart, Usage
 
 MAX_ITERATIONS = 6
 
@@ -63,6 +64,7 @@ def run_turn(
     session_id: str,
     messages: list[dict[str, Any]],
     tools: list[Tool],
+    provider: Provider,
 ) -> Iterator[AgentEvent]:
     """Run one user turn, yielding AgentEvents as things happen.
 
@@ -72,55 +74,50 @@ def run_turn(
     tool_schemas = [t.schema() for t in tools]
     tool_by_name = {t.name: t for t in tools}
 
-    for iteration in range(MAX_ITERATIONS):
-        # Cheap pre-flight: bail early if the session is already
+    for _iteration in range(MAX_ITERATIONS):
+        # Circuit breaker: bail early if the session is already
         # over budget. We still call the model for the final text
-        # turn up to the cap — this is just the circuit breaker.
+        # turn up to the cap — this is just belt and suspenders.
         rem = remaining(session_id)
         if rem["tokens"] <= 0 or rem["usd"] <= 0:
             yield AgentEvent("error", {"message": "Session budget exhausted."})
             return
 
         try:
-            stream = chat_stream(messages=messages, tools=tool_schemas)
+            stream = provider.stream(messages=messages, tools=tool_schemas)
         except Exception as exc:  # surface auth/config errors to the UI
             yield AgentEvent("error", {"message": f"LLM call failed: {exc}"})
             return
 
         content_buf = ""
-        tool_calls_buf: dict[int, dict[str, str]] = {}
-        usage: Any = None
+        # Ordered so we can serialize assistant.tool_calls in call order.
+        tool_calls: dict[str, dict[str, str]] = {}
+        usage: Usage | None = None
 
-        for chunk in stream:
-            # Usage chunk arrives last when stream_options.include_usage=True.
-            if getattr(chunk, "usage", None):
-                usage = chunk.usage
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta.content:
-                content_buf += delta.content
-                yield AgentEvent("token", {"content": delta.content})
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    slot = tool_calls_buf.setdefault(
-                        tc.index, {"id": "", "name": "", "args": ""}
-                    )
-                    if tc.id:
-                        slot["id"] = tc.id
-                    if tc.function and tc.function.name:
-                        slot["name"] = tc.function.name
-                    if tc.function and tc.function.arguments:
-                        slot["args"] += tc.function.arguments
+        for evt in stream:
+            if isinstance(evt, TextDelta):
+                if evt.content:
+                    content_buf += evt.content
+                    yield AgentEvent("token", {"content": evt.content})
+            elif isinstance(evt, ToolCallStart):
+                tool_calls.setdefault(evt.id, {"id": evt.id, "name": evt.name, "args": ""})
+                # Keep name fresh if a later event updates it.
+                tool_calls[evt.id]["name"] = evt.name or tool_calls[evt.id]["name"]
+            elif isinstance(evt, ToolArgsDelta):
+                slot = tool_calls.setdefault(evt.id, {"id": evt.id, "name": "", "args": ""})
+                slot["args"] += evt.delta
+            elif isinstance(evt, Usage):
+                usage = evt
 
         # Apply usage to the session budget. If this turn pushed
         # us over, emit the event anyway so the UI updates, then
         # stop.
-        usage_payload = None
         if usage is not None:
             try:
                 usage_payload = apply_usage(
                     session_id,
+                    provider=provider.name,
+                    model=provider.model,
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
                 )
@@ -131,14 +128,13 @@ def run_turn(
 
         # No tool calls -> the assistant just wrote prose. Persist
         # the message and we're done with this turn.
-        if not tool_calls_buf:
+        if not tool_calls:
             messages.append({"role": "assistant", "content": content_buf})
             yield AgentEvent("done", {"content": content_buf})
             return
 
         # Tool calls present: record the assistant message exactly
-        # as the API expects, then execute each tool in order.
-        ordered = [tool_calls_buf[i] for i in sorted(tool_calls_buf)]
+        # as the OpenAI API expects, then execute each tool in order.
         messages.append({
             "role": "assistant",
             "content": content_buf or None,
@@ -148,11 +144,11 @@ def run_turn(
                     "type": "function",
                     "function": {"name": tc["name"], "arguments": tc["args"] or "{}"},
                 }
-                for tc in ordered
+                for tc in tool_calls.values()
             ],
         })
 
-        for tc in ordered:
+        for tc in tool_calls.values():
             try:
                 args = json.loads(tc["args"] or "{}")
             except json.JSONDecodeError:

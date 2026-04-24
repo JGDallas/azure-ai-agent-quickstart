@@ -2,8 +2,10 @@
 # Azure AI Agent Quickstart — one-shot launcher.
 #
 #   1. Ensures .env exists (copied from .env.example on first run).
-#   2. Validates REQUIRED vars are set and non-placeholder.
-#   3. Reports which optional integrations are active.
+#   2. Reads LLM_PROVIDER, then validates only the vars that
+#      provider requires.
+#   3. Reports which OTHER providers are also configured and which
+#      optional integrations are active.
 #   4. docker compose up --build -d, waits for /healthz, prints URLs.
 
 set -euo pipefail
@@ -30,34 +32,19 @@ if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
   echo
   echo "Next steps:"
   echo "  1. Open .env in VS Code (or any editor)."
-  echo "  2. Fill in the REQUIRED values (marked # REQUIRED)."
-  echo "     See docs/GET_AZURE_KEYS.md if you haven't deployed gpt-4o-mini yet."
+  echo "  2. Pick an LLM_PROVIDER (azure | openai | anthropic) and fill in"
+  echo "     just that provider's block."
   echo "  3. Re-run ./run.sh"
   exit 0
 fi
 
-# --- Parse .env safely (no shell injection). ---
-REQUIRED=(
-  AZURE_OPENAI_ENDPOINT
-  AZURE_OPENAI_API_KEY
-  AZURE_OPENAI_DEPLOYMENT
-  AZURE_OPENAI_API_VERSION
-)
-OPTIONAL_SEARCH=(
-  AZURE_AI_SEARCH_ENDPOINT
-  AZURE_AI_SEARCH_KEY
-  AZURE_AI_SEARCH_INDEX
-)
-OPTIONAL_APPINSIGHTS=(APPLICATIONINSIGHTS_CONNECTION_STRING)
-
-# Read a KEY=VALUE from .env, ignoring comments and blanks. Keeps inline quotes.
+# --- Helpers. ---
 env_get() {
   local key="$1"
   local line
   line="$(grep -E "^[[:space:]]*${key}=" "$SCRIPT_DIR/.env" | tail -n1 || true)"
   [[ -z "$line" ]] && { echo ""; return; }
   local val="${line#*=}"
-  # Trim leading/trailing whitespace and surrounding quotes.
   val="${val#"${val%%[![:space:]]*}"}"
   val="${val%"${val##*[![:space:]]}"}"
   val="${val%\"}"; val="${val#\"}"
@@ -76,9 +63,58 @@ is_placeholder() {
   esac
 }
 
-echo "${BOLD}Azure AI Agent Quickstart${RESET}"
-echo "${DIM}Validating .env...${RESET}"
+display_var() {
+  local k="$1" v="$2"
+  case "$k" in
+    *KEY*|*SECRET*) printf '%s...(redacted)' "$(printf '%s' "$v" | head -c 6)" ;;
+    *) printf '%s' "$v" ;;
+  esac
+}
 
+provider_configured() {
+  # Returns 0 if the given provider has all its required vars set.
+  local p="$1"
+  case "$p" in
+    azure)
+      ! is_placeholder "$(env_get AZURE_OPENAI_ENDPOINT)" \
+        && ! is_placeholder "$(env_get AZURE_OPENAI_API_KEY)"
+      ;;
+    openai)
+      ! is_placeholder "$(env_get OPENAI_API_KEY)"
+      ;;
+    anthropic)
+      ! is_placeholder "$(env_get ANTHROPIC_API_KEY)"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+echo "${BOLD}Azure AI Agent Quickstart${RESET}"
+
+# --- Determine provider + its required vars. ---
+PROVIDER="$(env_get LLM_PROVIDER)"
+PROVIDER="${PROVIDER:-azure}"
+case "$PROVIDER" in
+  azure|openai|anthropic) ;;
+  *)
+    echo "${RED}LLM_PROVIDER=$PROVIDER is not recognized. Use azure, openai, or anthropic.${RESET}"
+    exit 1
+    ;;
+esac
+
+case "$PROVIDER" in
+  azure)
+    REQUIRED=(AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_KEY AZURE_OPENAI_DEPLOYMENT AZURE_OPENAI_API_VERSION)
+    ;;
+  openai)
+    REQUIRED=(OPENAI_API_KEY OPENAI_MODEL)
+    ;;
+  anthropic)
+    REQUIRED=(ANTHROPIC_API_KEY ANTHROPIC_MODEL)
+    ;;
+esac
+
+echo "${DIM}Validating .env for LLM_PROVIDER=${PROVIDER}...${RESET}"
 all_ok=1
 for k in "${REQUIRED[@]}"; do
   v="$(env_get "$k")"
@@ -86,28 +122,36 @@ for k in "${REQUIRED[@]}"; do
     echo "  ${RED}x${RESET} $k is missing"
     all_ok=0
   else
-    display="$v"
-    case "$k" in
-      *KEY*|*SECRET*) display="$(printf '%s' "$v" | head -c 6)...(redacted)" ;;
-    esac
-    echo "  ${GREEN}OK${RESET} $k = $display"
+    echo "  ${GREEN}OK${RESET} $k = $(display_var "$k" "$v")"
   fi
 done
 
 if [[ "$all_ok" -ne 1 ]]; then
   echo
-  echo "${RED}.env is missing required values. Edit .env and re-run ./run.sh${RESET}"
+  echo "${RED}.env is missing required values for provider '${PROVIDER}'. Edit .env and re-run ./run.sh${RESET}"
   exit 1
 fi
 
-# --- Report optional integrations. ---
+# --- Report OTHER providers. ---
+echo
+echo "${BOLD}Other providers:${RESET}"
+for p in azure openai anthropic; do
+  [[ "$p" == "$PROVIDER" ]] && continue
+  if provider_configured "$p"; then
+    echo "  ${GREEN}on${RESET}  $p (also configured — can switch via LLM_PROVIDER=$p)"
+  else
+    echo "  ${YELLOW}off${RESET} $p (not configured)"
+  fi
+done
+
+# --- Optional integrations. ---
 search_active=1
-for k in "${OPTIONAL_SEARCH[@]}"; do
+for k in AZURE_AI_SEARCH_ENDPOINT AZURE_AI_SEARCH_KEY AZURE_AI_SEARCH_INDEX; do
   v="$(env_get "$k")"
   if is_placeholder "$v"; then search_active=0; fi
 done
 ai_active=1
-v="$(env_get "${OPTIONAL_APPINSIGHTS[0]}")"
+v="$(env_get APPLICATIONINSIGHTS_CONNECTION_STRING)"
 if is_placeholder "$v"; then ai_active=0; fi
 
 echo

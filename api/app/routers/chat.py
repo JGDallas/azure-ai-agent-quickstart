@@ -21,6 +21,7 @@ from ..persistence import (
     save_message,
     start_run,
 )
+from ..providers import get_provider
 from ..telemetry import record
 
 router = APIRouter()
@@ -30,6 +31,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     agent: str
     message: str
+    provider: str | None = None  # override for future UI picker; None uses .env
 
 
 @router.get("/agents")
@@ -40,6 +42,7 @@ def agents() -> list[dict[str, Any]]:
 @router.post("/chat")
 def chat(req: ChatRequest) -> EventSourceResponse:
     spec = get_agent(req.agent)
+    provider = get_provider(req.provider)
 
     session_id = req.session_id or f"s_{uuid.uuid4().hex[:12]}"
     run_id = f"r_{uuid.uuid4().hex[:12]}"
@@ -49,7 +52,6 @@ def chat(req: ChatRequest) -> EventSourceResponse:
     persisted = load_messages(session_id)
     messages: list[dict[str, Any]] = [{"role": "system", "content": spec.system_prompt}]
     if persisted and persisted[0].get("role") == "system":
-        # Don't duplicate the system prompt if it's already there.
         messages = [persisted[0]] + persisted[1:]
     else:
         messages.extend(persisted)
@@ -57,36 +59,37 @@ def chat(req: ChatRequest) -> EventSourceResponse:
 
     save_message(session_id, "user", req.message)
     start_run(run_id, session_id, req.message)
-    record("run.started", session_id=session_id, run_id=run_id, agent=spec.id)
+    record("run.started", session_id=session_id, run_id=run_id, agent=spec.id, provider=provider.name, model=provider.model)
 
     def sse() -> Iterator[dict[str, Any]]:
-        # First event: the IDs so the client can correlate.
-        yield {"event": "session", "data": json.dumps({"session_id": session_id, "run_id": run_id})}
+        yield {
+            "event": "session",
+            "data": json.dumps({
+                "session_id": session_id,
+                "run_id": run_id,
+                "provider": provider.name,
+                "model": provider.model,
+            }),
+        }
 
         prompt_tokens = completion_tokens = total_tokens = 0
         cost_usd = 0.0
-        last_usage: dict[str, Any] | None = None
 
         try:
-            for evt in run_turn(session_id=session_id, messages=messages, tools=spec.tools):
+            for evt in run_turn(session_id=session_id, messages=messages, tools=spec.tools, provider=provider):
                 payload = evt.data
-                # Track final cumulative numbers.
                 if evt.type == "usage":
-                    last_usage = payload.get("cumulative") or {}
-                    prompt_tokens = last_usage.get("prompt_tokens", prompt_tokens)
-                    completion_tokens = last_usage.get("completion_tokens", completion_tokens)
-                    total_tokens = last_usage.get("total_tokens", total_tokens)
-                    cost_usd = last_usage.get("cost_usd", cost_usd)
+                    cumulative = payload.get("cumulative") or {}
+                    prompt_tokens = cumulative.get("prompt_tokens", prompt_tokens)
+                    completion_tokens = cumulative.get("completion_tokens", completion_tokens)
+                    total_tokens = cumulative.get("total_tokens", total_tokens)
+                    cost_usd = cumulative.get("cost_usd", cost_usd)
 
                 save_event(evt.type, payload, session_id=session_id, run_id=run_id)
                 record(f"agent.{evt.type}", session_id=session_id, run_id=run_id)
                 yield {"event": evt.type, "data": json.dumps(payload)}
 
-            # Persist the final assistant message(s) so the next turn
-            # sees them. We replay from `messages` starting at the
-            # first appended assistant entry.
-            # We know the history built above ended with the user msg,
-            # so anything past that index is new.
+            # Persist any new assistant/tool messages accumulated during the turn.
             user_idx = next(
                 i for i in range(len(messages) - 1, -1, -1)
                 if messages[i].get("role") == "user"

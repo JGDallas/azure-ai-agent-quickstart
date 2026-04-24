@@ -1,9 +1,9 @@
 """Lightweight LLM-as-judge.
 
-We ask the same deployment to score the last assistant reply on
+We ask the active provider to score the last assistant reply on
 three dimensions: Groundedness, Relevance, Coherence (1-5 each)
 with a one-line rationale. Output is coerced to JSON via the
-response_format argument.
+provider's complete_json method.
 
 This deliberately does NOT use `azure-ai-evaluation` — that SDK
 pulls in extra dependencies and setup. Upgrade path is obvious:
@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .llm import chat_once
+from .providers import Provider
 
 
 SCORE_SCHEMA = {
@@ -59,6 +59,7 @@ SYSTEM_PROMPT = (
 
 
 def evaluate(
+    provider: Provider,
     user_message: str,
     assistant_message: str,
     retrieved_context: list[str] | None = None,
@@ -79,12 +80,7 @@ def evaluate(
     ]
 
     try:
-        resp = chat_once(
-            messages=messages,
-            temperature=0.0,
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content or "{}"
+        raw = provider.complete_json(messages=messages, schema=SCORE_SCHEMA, temperature=0.0)
         parsed = json.loads(raw)
     except Exception as exc:
         return {"error": f"Evaluation failed: {exc}"}

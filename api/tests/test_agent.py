@@ -1,72 +1,55 @@
 """Unit tests for the agent loop.
 
-We stub the Azure OpenAI client so we can script a two-round
-scenario: the model calls a tool, the tool returns a value, the
-model reads the result and produces a final text answer.
+Tests use a tiny FakeProvider that emits a scripted sequence of
+ProviderEvents per stream() call. That's the whole seam — the
+agent loop has no other coupling to a vendor SDK.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, Iterator
-from unittest.mock import patch
-
-import pytest
 
 from app.agent import Tool, run_turn
+from app.providers.base import Provider, ProviderEvent, TextDelta, ToolArgsDelta, ToolCallStart, Usage
 
 
-# ---------- Helpers to build fake streaming chunks ----------
+class FakeProvider:
+    """Provider stub. Supply a list of event lists (one per round)."""
 
-def _chunk(
-    content: str | None = None,
-    tool_calls: list[dict[str, Any]] | None = None,
-    usage: tuple[int, int] | None = None,
-) -> Any:
-    delta = SimpleNamespace(content=content, tool_calls=None)
-    if tool_calls:
-        delta.tool_calls = [
-            SimpleNamespace(
-                index=tc["index"],
-                id=tc.get("id"),
-                function=SimpleNamespace(
-                    name=tc.get("name"),
-                    arguments=tc.get("arguments"),
-                ),
-            )
-            for tc in tool_calls
-        ]
-    choice = SimpleNamespace(delta=delta)
-    u = None
-    if usage is not None:
-        u = SimpleNamespace(prompt_tokens=usage[0], completion_tokens=usage[1])
-    return SimpleNamespace(choices=[choice] if content or tool_calls else [], usage=u)
+    name = "fake"
+    model = "fake-model"
 
+    def __init__(self, rounds: list[list[ProviderEvent]]) -> None:
+        self._rounds = list(rounds)
+        self.call_count = 0
+        self.json_calls: list[list[dict[str, Any]]] = []
+        self.json_response = "{}"
 
-def _script(rounds: list[list[Any]]) -> Iterator[list[Any]]:
-    for chunks in rounds:
-        yield chunks
+    def stream(self, messages, tools, temperature=0.2) -> Iterator[ProviderEvent]:
+        idx = self.call_count
+        self.call_count += 1
+        if idx >= len(self._rounds):
+            raise AssertionError(f"FakeProvider called {self.call_count} times; only {len(self._rounds)} rounds scripted")
+        yield from self._rounds[idx]
+
+    def complete_json(self, messages, schema=None, temperature=0.0) -> str:
+        self.json_calls.append(list(messages))
+        return self.json_response
 
 
 def test_agent_tool_call_then_final_answer() -> None:
-    call_count = {"n": 0}
-
-    round_one = [
-        _chunk(tool_calls=[{"index": 0, "id": "call_1", "name": "echo", "arguments": ""}]),
-        _chunk(tool_calls=[{"index": 0, "arguments": '{"value":'}]),
-        _chunk(tool_calls=[{"index": 0, "arguments": ' "hi"}'}]),
-        _chunk(usage=(50, 20)),
-    ]
-    round_two = [
-        _chunk(content="The tool returned hi."),
-        _chunk(usage=(80, 15)),
-    ]
-    scripted = [round_one, round_two]
-
-    def fake_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, temperature: float = 0.2) -> Any:
-        idx = call_count["n"]
-        call_count["n"] += 1
-        return iter(scripted[idx])
+    fake = FakeProvider([
+        [
+            ToolCallStart(id="call_1", name="echo"),
+            ToolArgsDelta(id="call_1", delta='{"value":'),
+            ToolArgsDelta(id="call_1", delta=' "hi"}'),
+            Usage(prompt_tokens=50, completion_tokens=20),
+        ],
+        [
+            TextDelta(content="The tool returned hi."),
+            Usage(prompt_tokens=80, completion_tokens=15),
+        ],
+    ])
 
     def echo_fn(args: dict[str, Any]) -> dict[str, Any]:
         return {"echo": args.get("value")}
@@ -83,11 +66,9 @@ def test_agent_tool_call_then_final_answer() -> None:
         {"role": "user", "content": "say hi"},
     ]
 
-    with patch("app.agent.chat_stream", side_effect=fake_stream):
-        events = list(run_turn(session_id="s_test", messages=messages, tools=[echo]))
+    events = list(run_turn(session_id="s_test", messages=messages, tools=[echo], provider=fake))
 
     types = [e.type for e in events]
-
     assert "tool_call" in types
     assert "tool_result" in types
     assert types[-1] == "done"
@@ -102,29 +83,24 @@ def test_agent_tool_call_then_final_answer() -> None:
     done = events[-1]
     assert done.data["content"] == "The tool returned hi."
 
-    # Model was called twice: one tool round, one final answer.
-    assert call_count["n"] == 2
-
-    # Conversation was mutated: assistant(tool_calls), tool, assistant(final).
+    assert fake.call_count == 2
+    # The conversation was mutated: assistant(tool_calls), tool, assistant(final).
     assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"] == "The tool returned hi."
     assert any(m["role"] == "tool" for m in messages)
 
 
 def test_agent_streams_plain_text_when_no_tools() -> None:
-    round_one = [
-        _chunk(content="hello "),
-        _chunk(content="world"),
-        _chunk(usage=(10, 2)),
-    ]
-
-    def fake_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, temperature: float = 0.2) -> Any:
-        return iter(round_one)
+    fake = FakeProvider([
+        [
+            TextDelta(content="hello "),
+            TextDelta(content="world"),
+            Usage(prompt_tokens=10, completion_tokens=2),
+        ],
+    ])
 
     messages = [{"role": "user", "content": "hi"}]
-
-    with patch("app.agent.chat_stream", side_effect=fake_stream):
-        events = list(run_turn(session_id="s_test2", messages=messages, tools=[]))
+    events = list(run_turn(session_id="s_test2", messages=messages, tools=[], provider=fake))
 
     tokens = [e.data["content"] for e in events if e.type == "token"]
     assert "".join(tokens) == "hello world"
@@ -132,8 +108,6 @@ def test_agent_streams_plain_text_when_no_tools() -> None:
 
 
 def test_agent_handles_tool_exception() -> None:
-    call_count = {"n": 0}
-
     def broken(args: dict[str, Any]) -> Any:
         raise RuntimeError("kaboom")
 
@@ -144,20 +118,44 @@ def test_agent_handles_tool_exception() -> None:
         fn=broken,
     )
 
-    rounds = [
-        [_chunk(tool_calls=[{"index": 0, "id": "c1", "name": "broken", "arguments": "{}"}]),
-         _chunk(usage=(5, 1))],
-        [_chunk(content="Sorry, tool failed."), _chunk(usage=(7, 3))],
-    ]
+    fake = FakeProvider([
+        [
+            ToolCallStart(id="c1", name="broken"),
+            ToolArgsDelta(id="c1", delta="{}"),
+            Usage(prompt_tokens=5, completion_tokens=1),
+        ],
+        [
+            TextDelta(content="Sorry, tool failed."),
+            Usage(prompt_tokens=7, completion_tokens=3),
+        ],
+    ])
 
-    def fake_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, temperature: float = 0.2) -> Any:
-        idx = call_count["n"]
-        call_count["n"] += 1
-        return iter(rounds[idx])
-
-    with patch("app.agent.chat_stream", side_effect=fake_stream):
-        events = list(run_turn(session_id="s_test3", messages=[{"role": "user", "content": "go"}], tools=[tool]))
+    events = list(run_turn(
+        session_id="s_test3",
+        messages=[{"role": "user", "content": "go"}],
+        tools=[tool],
+        provider=fake,
+    ))
 
     result_evt = next(e for e in events if e.type == "tool_result")
     assert "error" in result_evt.data["result"]
     assert events[-1].type == "done"
+
+
+def test_agent_attributes_usage_to_provider_and_model() -> None:
+    """Budget lookup keys off (provider, model); make sure both pass through."""
+    fake = FakeProvider([
+        [
+            TextDelta(content="ok"),
+            Usage(prompt_tokens=100, completion_tokens=50),
+        ],
+    ])
+    messages = [{"role": "user", "content": "hi"}]
+    events = list(run_turn(session_id="s_prov", messages=messages, tools=[], provider=fake))
+
+    usage_evts = [e for e in events if e.type == "usage"]
+    assert len(usage_evts) == 1
+    assert usage_evts[0].data["provider"] == "fake"
+    assert usage_evts[0].data["model"] == "fake-model"
+    assert usage_evts[0].data["prompt_tokens"] == 100
+    assert usage_evts[0].data["completion_tokens"] == 50

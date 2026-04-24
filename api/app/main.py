@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import settings
+from .config import active_model, settings
 from .persistence import init as init_db
-from .routers import budget, chat, evaluations, runs, traces
+from .providers import list_configured
+from .routers import budget, chat, evaluations, providers, runs, traces
 from .telemetry import init_app_insights
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
@@ -25,12 +26,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Azure AI Agent Quickstart API",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
-# CORS wide open — this demo runs on localhost only and the UI
-# lives on a different port than the API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,8 +42,10 @@ app.add_middleware(
 def healthz() -> dict[str, object]:
     return {
         "status": "ok",
+        "provider": settings.llm_provider,
+        "model": active_model(settings),
+        "providers_configured": list_configured(),
         "features": settings.flags,
-        "deployment": settings.azure_openai_deployment,
     }
 
 
@@ -53,3 +54,4 @@ app.include_router(runs.router, tags=["runs"])
 app.include_router(budget.router, tags=["budget"])
 app.include_router(evaluations.router, tags=["evaluations"])
 app.include_router(traces.router, tags=["traces"])
+app.include_router(providers.router, tags=["providers"])

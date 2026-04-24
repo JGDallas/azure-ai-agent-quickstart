@@ -1,8 +1,9 @@
 """Per-session token + USD budget tracking.
 
 State is held in memory (process-local) and mirrored to SQLite
-via persistence.py so it survives a restart. A single API
-container is assumed — this is V1.
+via persistence.py so it survives a restart. Pricing is keyed by
+(provider, model) so switching providers — or running different
+models through the same provider — always uses the right rate.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
-from .config import settings
+from .config import active_model, settings
 
 
 class BudgetExceeded(Exception):
@@ -30,13 +31,20 @@ _state: dict[str, SessionBudget] = {}
 _lock = Lock()
 
 
-def _price() -> dict[str, float]:
-    entry = settings.price_table.get(settings.azure_openai_deployment)
-    if not entry:
-        # Fall back to the first entry in the table if the
-        # deployment name doesn't match — better than crashing.
-        entry = next(iter(settings.price_table.values()), {"input": 0.0, "output": 0.0})
-    return entry
+def _price(provider: str, model: str) -> dict[str, float]:
+    """Look up a price entry; degrade gracefully to 0/0 if unknown."""
+    per_provider = settings.price_table.get(provider) or {}
+    entry = per_provider.get(model)
+    if entry:
+        return entry
+    # Fall back to the first model we know for this provider,
+    # then to any first entry overall. Better than blowing up.
+    if per_provider:
+        return next(iter(per_provider.values()))
+    for models in settings.price_table.values():
+        if models:
+            return next(iter(models.values()))
+    return {"input": 0.0, "output": 0.0}
 
 
 def _ensure(session_id: str) -> SessionBudget:
@@ -66,6 +74,8 @@ def get(session_id: str) -> dict[str, Any]:
             "token_budget": settings.session_token_budget,
             "usd_budget": settings.session_usd_budget,
         },
+        "provider": settings.llm_provider,
+        "model": active_model(settings),
     }
 
 
@@ -76,6 +86,9 @@ def reset(session_id: str) -> None:
 
 def apply_usage(
     session_id: str,
+    *,
+    provider: str,
+    model: str,
     prompt_tokens: int,
     completion_tokens: int,
 ) -> dict[str, Any]:
@@ -85,8 +98,7 @@ def apply_usage(
     Raises BudgetExceeded if the session cap is blown. The caller
     decides whether to stop mid-turn or let the event through.
     """
-    price = _price()
-    # Prices in PRICE_TABLE_JSON are per 1M tokens.
+    price = _price(provider, model)
     cost = (prompt_tokens * price["input"] + completion_tokens * price["output"]) / 1_000_000.0
 
     with _lock:
@@ -104,6 +116,8 @@ def apply_usage(
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
         "cost_usd": round(cost, 6),
+        "provider": provider,
+        "model": model,
         "cumulative": get(session_id),
     }
 

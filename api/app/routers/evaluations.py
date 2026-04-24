@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from ..evaluation import evaluate
 from ..persistence import load_messages
+from ..providers import get_provider
 
 router = APIRouter()
 
@@ -16,6 +17,7 @@ class EvalRequest(BaseModel):
     user_message: str | None = None
     assistant_message: str | None = None
     retrieved_context: list[str] | None = None
+    provider: str | None = None  # override; None uses .env default
 
 
 @router.post("/evaluate")
@@ -24,8 +26,6 @@ def run_eval(req: EvalRequest) -> dict[str, Any]:
     assistant_msg = req.assistant_message
 
     if req.session_id and (not user_msg or not assistant_msg):
-        # Best-effort: pick the last user/assistant pair from the
-        # persisted conversation.
         history = load_messages(req.session_id)
         last_user = last_assistant = None
         for m in reversed(history):
@@ -43,4 +43,4 @@ def run_eval(req: EvalRequest) -> dict[str, Any]:
             detail="Need either (user_message + assistant_message) or a session_id with prior turns.",
         )
 
-    return evaluate(user_msg, assistant_msg, req.retrieved_context)
+    return evaluate(get_provider(req.provider), user_msg, assistant_msg, req.retrieved_context)
