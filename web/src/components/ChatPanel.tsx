@@ -30,8 +30,11 @@ export function ChatPanel({ sessionId, setSessionId, agent, disabled, onEvent }:
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    // Reset the displayed transcript when the session changes.
-    setMessages([]);
+    // Only clear the transcript when the parent explicitly
+    // starts a new session (sessionId -> null). Transitions
+    // from null to a real id happen mid-stream on the first
+    // turn and must NOT wipe the freshly-added bubbles.
+    if (sessionId === null) setMessages([]);
   }, [sessionId]);
 
   useEffect(() => {
