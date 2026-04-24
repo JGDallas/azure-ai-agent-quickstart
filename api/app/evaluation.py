@@ -2,12 +2,13 @@
 
 We ask the active provider to score the last assistant reply on
 three dimensions: Groundedness, Relevance, Coherence (1-5 each)
-with a one-line rationale. Output is coerced to JSON via the
-provider's complete_json method.
+with a one-line rationale.
 
-This deliberately does NOT use `azure-ai-evaluation` — that SDK
-pulls in extra dependencies and setup. Upgrade path is obvious:
-swap this file for the SDK if you want production-grade metrics.
+The schema gets inlined into the prompt so the model sees
+exactly what shape to return — the openai-compat adapter's
+complete_json only enforces "valid JSON", not schema conformance.
+The parser is also tolerant of case-insensitive keys as
+belt-and-suspenders.
 """
 
 from __future__ import annotations
@@ -50,12 +51,64 @@ SCORE_SCHEMA = {
 }
 
 
-SYSTEM_PROMPT = (
-    "You are an evaluator. Score the assistant's last reply on "
-    "Groundedness, Relevance, and Coherence using a 1-5 scale "
-    "(5 is best). Return ONLY JSON matching the provided schema. "
-    "Keep each rationale to one short sentence."
-)
+SYSTEM_PROMPT = """\
+You are an evaluator. Score the assistant's last reply on three
+dimensions using a 1-5 integer scale (5 is best):
+
+  groundedness — is the reply supported by the user's question
+                 and any retrieved context, without invented
+                 details?
+  relevance    — does the reply answer the question that was
+                 asked?
+  coherence    — is the reply well-formed, clear, and internally
+                 consistent?
+
+Return ONLY a JSON object with EXACTLY this shape:
+
+{
+  "groundedness": {"score": <int 1-5>, "rationale": "<one short sentence>"},
+  "relevance":    {"score": <int 1-5>, "rationale": "<one short sentence>"},
+  "coherence":    {"score": <int 1-5>, "rationale": "<one short sentence>"}
+}
+
+Keys MUST be lowercase. Each rationale MUST be one short sentence.
+Do not include any extra keys or prose outside the JSON.\
+"""
+
+
+def _pick(parsed: dict[str, Any], name: str) -> dict[str, Any]:
+    """Tolerant lookup. Accepts the canonical lowercase key, a
+    capitalized variant, or a flat `<name>` key whose value is
+    the score (with rationale elsewhere)."""
+    node = parsed.get(name)
+    if node is None:
+        # Try capitalized.
+        for k, v in parsed.items():
+            if k.lower() == name.lower():
+                node = v
+                break
+
+    rationale: str = ""
+    score_raw: Any = None
+
+    if isinstance(node, dict):
+        score_raw = node.get("score")
+        rationale = str(node.get("rationale", ""))
+    elif isinstance(node, (int, float)):
+        # Flat shape: score is the value, rationale elsewhere.
+        score_raw = node
+        rmap = parsed.get("rationale") or parsed.get("rationales") or {}
+        if isinstance(rmap, dict):
+            for k, v in rmap.items():
+                if k.lower() == name.lower():
+                    rationale = str(v)
+                    break
+
+    try:
+        score = max(1, min(5, int(score_raw)))
+    except (TypeError, ValueError):
+        score = 0
+    return {"score": score, "rationale": rationale}
 
 
 def evaluate(
@@ -93,18 +146,8 @@ def evaluate(
     except Exception as exc:
         return {"error": f"Evaluation failed: {exc}"}
 
-    # Clamp and normalize shape defensively.
-    def _pick(name: str) -> dict[str, Any]:
-        node = parsed.get(name) or {}
-        score = node.get("score")
-        try:
-            score = max(1, min(5, int(score)))
-        except (TypeError, ValueError):
-            score = 0
-        return {"score": score, "rationale": str(node.get("rationale", ""))}
-
     return {
-        "groundedness": _pick("groundedness"),
-        "relevance": _pick("relevance"),
-        "coherence": _pick("coherence"),
+        "groundedness": _pick(parsed, "groundedness"),
+        "relevance": _pick(parsed, "relevance"),
+        "coherence": _pick(parsed, "coherence"),
     }
