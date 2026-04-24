@@ -13,6 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 from ..agent import run_turn
 from ..agents_registry import get_agent, list_agents
 from ..budget import get as budget_get
+from ..config import settings
 from ..persistence import (
     create_session,
     finish_run,
@@ -32,6 +33,7 @@ class ChatRequest(BaseModel):
     agent: str
     message: str
     provider: str | None = None  # override for future UI picker; None uses .env
+    enable_web_search: bool = False  # ignored unless server has TAVILY_API_KEY
 
 
 @router.get("/agents")
@@ -48,9 +50,29 @@ def chat(req: ChatRequest) -> EventSourceResponse:
     run_id = f"r_{uuid.uuid4().hex[:12]}"
     create_session(session_id, spec.id)
 
+    # Assemble the tool bundle for this turn. Research Assistant
+    # gets an extra web_search tool when the user toggled it ON
+    # in the UI and the server is configured (TAVILY_API_KEY set).
+    tools = list(spec.tools)
+    system_prompt = spec.system_prompt
+    web_search_on = (
+        req.enable_web_search
+        and settings.flags.get("web_search", False)
+        and spec.id == "research"
+    )
+    if web_search_on:
+        from ..tools.web import web_search
+        tools.append(web_search)
+        system_prompt += (
+            "\n\nYou also have a web_search tool backed by Tavily. "
+            "Use it for questions about current events, recent "
+            "releases, or topics not in the local corpus. Always "
+            "cite the URLs you used."
+        )
+
     # Assemble the full message history: system + persisted + new user turn.
     persisted = load_messages(session_id)
-    messages: list[dict[str, Any]] = [{"role": "system", "content": spec.system_prompt}]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     if persisted and persisted[0].get("role") == "system":
         messages = [persisted[0]] + persisted[1:]
     else:
@@ -80,7 +102,7 @@ def chat(req: ChatRequest) -> EventSourceResponse:
                 session_id=session_id,
                 run_id=run_id,
                 messages=messages,
-                tools=spec.tools,
+                tools=tools,
                 provider=provider,
             ):
                 payload = evt.data

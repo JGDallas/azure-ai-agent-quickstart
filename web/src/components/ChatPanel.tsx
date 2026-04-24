@@ -21,9 +21,10 @@ type Props = {
   agent: string;
   disabled: boolean;
   onEvent: (event: string, data: any) => void;
+  enableWebSearch: boolean;
 };
 
-export function ChatPanel({ sessionId, setSessionId, agent, disabled, onEvent }: Props) {
+export function ChatPanel({ sessionId, setSessionId, agent, disabled, onEvent, enableWebSearch }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,7 +53,12 @@ export function ChatPanel({ sessionId, setSessionId, agent, disabled, onEvent }:
     setMessages((ms) => [...ms, userMsg, assistantMsg]);
 
     try {
-      for await (const evt of streamChat({ session_id: sessionId, agent, message: text })) {
+      for await (const evt of streamChat({
+        session_id: sessionId,
+        agent,
+        message: text,
+        enable_web_search: enableWebSearch,
+      })) {
         onEvent(evt.event, evt.data);
 
         if (evt.event === "session" && evt.data?.session_id && !sessionId) {

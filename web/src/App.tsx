@@ -11,6 +11,7 @@ import { AgentPicker } from "./components/AgentPicker";
 import { ChatPanel } from "./components/ChatPanel";
 import { ClientEvent, DevDrawer } from "./components/DevDrawer";
 import { Inspector } from "./components/Inspector";
+import { WebSearchToggle } from "./components/WebSearchToggle";
 
 type ToolEvent = {
   id: string;
@@ -35,6 +36,22 @@ export default function App() {
   const [devOpen, setDevOpen] = useState(false);
   const [clientEvents, setClientEvents] = useState<ClientEvent[]>([]);
   const [serverRefreshToken, setServerRefreshToken] = useState(0);
+
+  // Web search toggle — persists across reloads.
+  const [enableWebSearch, setEnableWebSearch] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("aiaq.web_search") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("aiaq.web_search", enableWebSearch ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [enableWebSearch]);
 
   useEffect(() => {
     (async () => {
@@ -118,13 +135,20 @@ export default function App() {
       <header className="px-5 py-3 border-b border-ink-200 flex items-center gap-4 bg-white">
         <div className="font-semibold">Azure AI Agent Quickstart</div>
         <div className="text-xs text-ink-400">{integrations}</div>
-        <button
-          onClick={() => setDevOpen((v) => !v)}
-          className="ml-auto text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 font-mono"
-          title="Developer drawer: raw SSE events, server-side LLM calls"
-        >
-          {"{ }"} dev
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <WebSearchToggle
+            enabled={enableWebSearch}
+            onChange={setEnableWebSearch}
+            available={!!flags?.web_search}
+          />
+          <button
+            onClick={() => setDevOpen((v) => !v)}
+            className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 font-mono"
+            title="Developer drawer: raw SSE events, server-side LLM calls"
+          >
+            {"{ }"} dev
+          </button>
+        </div>
         <div className="text-xs text-ink-400">
           {sessionId ? `session ${sessionId}` : "no session yet"}
         </div>
@@ -153,6 +177,7 @@ export default function App() {
             agent={agentId || ""}
             disabled={!agentId}
             onEvent={onEvent}
+            enableWebSearch={enableWebSearch}
           />
         </main>
         <aside className="border-l border-ink-200 bg-white">

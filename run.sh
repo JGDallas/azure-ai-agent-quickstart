@@ -154,6 +154,10 @@ ai_active=1
 v="$(env_get APPLICATIONINSIGHTS_CONNECTION_STRING)"
 if is_placeholder "$v"; then ai_active=0; fi
 
+tavily_active=1
+v="$(env_get TAVILY_API_KEY)"
+if is_placeholder "$v"; then tavily_active=0; fi
+
 echo
 echo "${BOLD}Detected optional integrations:${RESET}"
 if [[ "$search_active" -eq 1 ]]; then
@@ -165,6 +169,11 @@ if [[ "$ai_active" -eq 1 ]]; then
   echo "  ${GREEN}on${RESET}  Application Insights (cloud traces enabled)"
 else
   echo "  ${YELLOW}off${RESET} Application Insights — traces limited to in-memory + SQLite"
+fi
+if [[ "$tavily_active" -eq 1 ]]; then
+  echo "  ${GREEN}on${RESET}  Tavily web search (UI toggle in header will be enabled)"
+else
+  echo "  ${YELLOW}off${RESET} Tavily web search — UI toggle will be disabled"
 fi
 
 # --- Start compose. ---
